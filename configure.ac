@@ -21,8 +21,9 @@ PKG_PROG_PKG_CONFIG([0.25])
 
 uname_system=`uname -s`
 AC_MSG_NOTICE("Operating system: $uname_system")
-AM_CONDITIONAL([PLATFORM_LINUX], [test x$uname_system = xLinux])
 AM_CONDITIONAL([PLATFORM_DARWIN], [test x$uname_system = xDarwin])
+AM_CONDITIONAL([PLATFORM_LINUX], [test x$uname_system = xLinux])
+AM_CONDITIONAL([PLATFORM_WSL], [uname -r | grep -q Microsoft])
 
 AC_HEADER_STDC
 
@@ -173,6 +174,27 @@ AC_SUBST([HAVE_ZLIB])
 
 ####### Platform Flags ########################################################
 
+AC_RUN_IFELSE([
+  AC_LANG_SOURCE([[
+    #include <utsname.h>
+    #include <string.h>
+    #include <stdio.h>
+    int main() {
+      struct utsname uts;
+      uname(&uts);
+      if (strstr(uts.release, "Microsoft") != NULL) {
+        return 0;
+      } else {
+        return 1;
+      }
+    }
+    ]])],
+    [is_wsl=no; AC_MSG_NOTICE([Yay, no WSL])],
+    [is_wsl=yes; AC_MSG_NOTICE([Microsoft Windows Subsystem for Linux])]
+)
+AS_IF([test "x$is_wsl" != xno],
+      [AC_DEFINE([XZERO_WSL], [1], [Works around WSL oddities (Windows Subsystem for Linux)])])
+
 AS_IF([test "x$uname_system" = xDarwin],
       [PLATFORM_CXXFLAGS="-stdlib=libc++"]) 
 AS_IF([test "x$uname_system" = xLinux],
@@ -192,6 +214,6 @@ BASE_LIBS="$PLATFORM_LDFLAGS $OPENSSL_LDADD $LIBPCRE_LIBS $OPENSSL_LIBS \
  $ZLIB_LIBS $BZLIB_LIBS -lresolv"
 AC_SUBST([BASE_LIBS])
 
-AC_CONFIG_HEADERS(xzero/sysconfig.h)
+AC_CONFIG_HEADERS(src/xzero/sysconfig.h)
 AC_CONFIG_FILES(Makefile XzeroBase.pc XzeroFlow.pc XzeroTest.pc)
 AC_OUTPUT

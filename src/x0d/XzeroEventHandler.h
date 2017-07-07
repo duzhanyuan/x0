@@ -6,6 +6,7 @@
 // the License at: http://opensource.org/licenses/MIT
 
 #include <x0d/XzeroState.h>
+#include <xzero/UnixSignals.h>
 
 namespace xzero {
   class HttpServer;
@@ -30,14 +31,15 @@ class XzeroEventHandler {
   void setState(XzeroState newState);
 
  private:
-  void onConfigReload();
+  void onConfigReload(const xzero::UnixSignalInfo& info);
   void onCycleLogs(const xzero::UnixSignalInfo& info);
   void onUpgradeBinary(const xzero::UnixSignalInfo& info);
-  void onQuickShutdown();
-  void onGracefulShutdown();
+  void onQuickShutdown(const xzero::UnixSignalInfo& info);
+  void onGracefulShutdown(const xzero::UnixSignalInfo& info);
 
  private:
   XzeroDaemon* daemon_;
+  std::unique_ptr<xzero::UnixSignals> signals_;
   xzero::Executor* executor_;
   XzeroState state_;
 };

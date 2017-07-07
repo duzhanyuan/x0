@@ -45,6 +45,8 @@
 #include <xzero-flow/ir/IRProgram.h>
 #include <xzero-flow/ir/PassManager.h>
 #include <xzero-flow/vm/Signature.h>
+#include <xzero-flow/vm/Runner.h>
+#include <xzero-flow/transform/MergeBlockPass.h>
 #include <xzero-flow/transform/UnusedBlockPass.h>
 #include <xzero-flow/transform/EmptyBlockElimination.h>
 #include <xzero-flow/transform/InstructionElimination.h>
@@ -56,7 +58,14 @@
 using namespace xzero;
 using namespace xzero::http;
 
+#if !defined(NDEBUG)
 #define TRACE(msg...) logTrace("x0d", msg)
+#define DEBUG(msg...) logDebug("x0d", msg)
+#else
+#define TRACE(msg...) do {} while (0)
+#define DEBUG(msg...) do {} while (0)
+#endif
+
 
 // XXX variable defined by mimetypes2cc compiler
 extern std::unordered_map<std::string, std::string> mimetypes2cc;
@@ -187,7 +196,14 @@ std::shared_ptr<flow::vm::Program> XzeroDaemon::loadConfigStream(
 
     // optional passes
     if (optimizationLevel_ >= 1) {
+      pm.registerPass(std::make_unique<flow::MergeBlockPass>());
+    }
+
+    if (optimizationLevel_ >= 2) {
       pm.registerPass(std::make_unique<flow::EmptyBlockElimination>());
+    }
+
+    if (optimizationLevel_ >= 3) {
       pm.registerPass(std::make_unique<flow::InstructionElimination>());
     }
 
@@ -223,14 +239,31 @@ void XzeroDaemon::patchProgramIR(xzero::flow::IRProgram* programIR,
   // this function will never return, thus, we're not injecting
   // our return(I)V before the RET instruction but replace it.
   IRBuiltinHandler* returnFn =
-      irgen->getBuiltinHandler(vm::Signature("return(I)B"));
+      irgen->getBuiltinHandler(vm::Signature("return(II)B"));
 
+  // remove RetInstr if prior instr never returns
+  // replace RetInstr with `handler return(II)V 404, 0`
   for (BasicBlock* bb: mainIR->basicBlocks()) {
-    if (auto ret = dynamic_cast<RetInstr*>(bb->getTerminator())) {
+    if (auto br = dynamic_cast<BrInstr*>(bb->getTerminator())) {
+      // check if last instruction *always* finishes the handler
+      if (auto handler = dynamic_cast<HandlerCallInstr*>(bb->back(1))) {
+        if (handler->callee() == returnFn) { // return(II)B
+          delete bb->remove(br);
+        }
+      }
+    } else if (auto ret = dynamic_cast<RetInstr*>(bb->getTerminator())) {
       delete bb->remove(ret);
 
+      // check if last instruction *always* finishes the handler
+      if (auto handler = dynamic_cast<HandlerCallInstr*>(bb->back())) {
+        if (handler->callee() == returnFn) { // return(II)B
+          continue;
+        }
+      }
+
       irgen->setInsertPoint(bb);
-      irgen->createInvokeHandler(returnFn, { irgen->get(404) });
+      irgen->createInvokeHandler(returnFn, { irgen->get(404),   // status
+                                             irgen->get(0) });  // statusOverride
     }
   }
 }
@@ -327,6 +360,15 @@ void XzeroDaemon::postConfig() {
     RAISE(ConfigurationError, "No listeners configured.");
   }
 
+#if defined(XZERO_WSL)
+  if (config_->tcpFinTimeout != Duration::Zero) {
+    config_->tcpFinTimeout = Duration::Zero;
+    logWarning("x0d",
+               "Your platform does not support overriding TCP FIN timeout. "
+               "Using system defaults.");
+  }
+#endif
+
   // HTTP/1 connection factory
   http1_.reset(new http1::ConnectionFactory(
       config_->requestHeaderBufferSize,
@@ -409,8 +451,20 @@ std::unique_ptr<EventLoop> XzeroDaemon::createEventLoop() {
 }
 
 void XzeroDaemon::handleRequest(HttpRequest* request, HttpResponse* response) {
-  XzeroContext* cx = new XzeroContext(main_, request, response);
-  cx->run();
+  // XXX the XzeroContext instance is getting deleted upon response completion
+  XzeroContext* cx = new XzeroContext(main_,
+                                      request,
+                                      response,
+                                      &config_->errorPages,
+                                      config_->maxInternalRedirectCount);
+
+  if (request->expect100Continue()) {
+    response->send100Continue([cx, request](bool succeed) {
+      request->consumeContent(std::bind(&flow::vm::Runner::run, cx->runner()));
+    });
+  } else {
+    request->consumeContent(std::bind(&flow::vm::Runner::run, cx->runner()));
+  }
 }
 
 void XzeroDaemon::validateConfig(flow::Unit* unit) {
@@ -520,9 +574,15 @@ void XzeroDaemon::setupConnector(
     std::function<void(T*)> connectorVisitor) {
 
   if (reusePort && !InetConnector::isReusePortSupported()) {
-    logWarning("x0d", "You platform does not support SO_REUSEPORT. "
+    logWarning("x0d", "Your platform does not support SO_REUSEPORT. "
                       "Falling back to traditional connection scheduling.");
     reusePort = false;
+  }
+
+  if (deferAccept && !InetConnector::isDeferAcceptSupported()) {
+    logWarning("x0d", "Your platform does not support TCP_DEFER_ACCEPT. "
+                      "Disabling.");
+    deferAccept = false;
   }
 
   if (reusePort) {
@@ -570,7 +630,9 @@ T* XzeroDaemon::doSetupConnector(
       reusePort
   );
 
-  inet->setDeferAccept(deferAccept);
+  if (deferAccept)
+    inet->setDeferAccept(deferAccept);
+
   inet->setMultiAcceptCount(multiAccept);
   inet->addConnectionFactory(http1_->protocolName(),
       std::bind(&HttpConnectionFactory::create, http1_.get(),

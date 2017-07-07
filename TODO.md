@@ -3,6 +3,22 @@
 
 ### Intermediate 0
 
+- [ ] test: ensure `HttpStatus::NoResponse` actually terminates the transport instant
+- [x] *fix* SIGNALS section in x0d man page. bring it up to date.
+- Proper Error Page Handling
+  - [x] ensure global status code maps are also looked up (secondary)
+  - [x] `error.page(int status, string internal_uri, int override = 0)`
+        to support internal URI redirection upon given status codes;
+        Allows internal redirection by running main handler again with
+        request method overridden as GET and request URI set to the above.
+        If `override` is set to a status code, that one will be sent out
+        instead.
+  - [x] consider dropping `error.handler()` completely (until reintroduced)
+  - [x] `error.page(status, external_uri)` to support external URI redirects upon given status codes
+        That means, it'll respond with a 302 (default) or any other 30x status
+        code and adds a Location response header.
+  - [x] ensure `staticfile` honors error pages
+  - [x] ensure `precompressed` honors error pages
 - SslConnector: add optional support to also allow plaintext connections
 - BUG: testing: EXPECTxx failures do also increment success count?
 - extend FCGI connector to tweak maxKeepAlive (just like in HTTP/1)

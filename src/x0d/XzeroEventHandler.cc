@@ -19,39 +19,50 @@ using namespace xzero;
 XzeroEventHandler::XzeroEventHandler(XzeroDaemon* daemon,
                                      xzero::Executor* executor)
     : daemon_(daemon),
+      signals_(UnixSignals::create(executor)),
       executor_(executor),
       state_(XzeroState::Inactive) {
 
-  executor_->executeOnSignal(SIGHUP, std::bind(&XzeroEventHandler::onConfigReload, this));
-  executor_->executeOnSignal(SIGUSR1, std::bind(&XzeroEventHandler::onCycleLogs, this, std::placeholders::_1));
-  executor_->executeOnSignal(SIGUSR2, std::bind(&XzeroEventHandler::onUpgradeBinary, this, std::placeholders::_1));
-  executor_->executeOnSignal(SIGQUIT, std::bind(&XzeroEventHandler::onGracefulShutdown, this));
-  executor_->executeOnSignal(SIGTERM, std::bind(&XzeroEventHandler::onQuickShutdown, this));
-  executor_->executeOnSignal(SIGINT, std::bind(&XzeroEventHandler::onQuickShutdown, this));
+  signals_->notify(SIGHUP, std::bind(&XzeroEventHandler::onConfigReload, this, std::placeholders::_1));
+  signals_->notify(SIGUSR1, std::bind(&XzeroEventHandler::onCycleLogs, this, std::placeholders::_1));
+  signals_->notify(SIGUSR2, std::bind(&XzeroEventHandler::onUpgradeBinary, this, std::placeholders::_1));
+  signals_->notify(SIGQUIT, std::bind(&XzeroEventHandler::onGracefulShutdown, this, std::placeholders::_1));
+  signals_->notify(SIGTERM, std::bind(&XzeroEventHandler::onQuickShutdown, this, std::placeholders::_1));
+  signals_->notify(SIGINT, std::bind(&XzeroEventHandler::onQuickShutdown, this, std::placeholders::_1));
 }
 
 XzeroEventHandler::~XzeroEventHandler() {
 }
 
-void XzeroEventHandler::onConfigReload() {
-  logNotice("x0d", "Reloading configuration.");
-  daemon_->reloadConfiguration();
+void XzeroEventHandler::onConfigReload(const xzero::UnixSignalInfo& info) {
+  logNotice("x0d",
+            "Reloading configuration. (requested via $0 by UID $1 PID $2)",
+            UnixSignals::toString(info.signal),
+            info.uid.getOrElse(-1),
+            info.pid.getOrElse(-1));
 
-  executor_->executeOnSignal(SIGHUP, std::bind(&XzeroEventHandler::onConfigReload, this));
+  /* daemon_->reloadConfiguration(); */
+
+  signals_->notify(SIGHUP, std::bind(&XzeroEventHandler::onConfigReload, this, std::placeholders::_1));
 }
 
 void XzeroEventHandler::onCycleLogs(const xzero::UnixSignalInfo& info) {
-  logNotice("x0d", "Reload signal received.");
+  logNotice("x0d", "Cycling logs. (requested via $0 by UID $1 PID $2)",
+            UnixSignals::toString(info.signal),
+            info.uid.getOrElse(-1),
+            info.pid.getOrElse(-1));
 
   daemon_->onCycleLogs();
 
-  executor_->executeOnSignal(SIGUSR1, std::bind(&XzeroEventHandler::onCycleLogs, this, std::placeholders::_1));
+  signals_->notify(SIGUSR1, std::bind(&XzeroEventHandler::onCycleLogs, this, std::placeholders::_1));
 }
 
 void XzeroEventHandler::onUpgradeBinary(const UnixSignalInfo& info) {
   logNotice("x0d",
-            "Upgrading binary requested by pid $0 uid $1",
-            info.pid.get(), info.uid.get());
+            "Upgrading binary. (requested via $0 by UID $1 PID $2)",
+            UnixSignals::toString(info.signal),
+            info.uid.getOrElse(-1),
+            info.pid.getOrElse(-1));
 
   /* TODO [x0d] binary upgrade
    * 1. suspend the world
@@ -62,13 +73,22 @@ void XzeroEventHandler::onUpgradeBinary(const UnixSignalInfo& info) {
    */
 }
 
-void XzeroEventHandler::onQuickShutdown() {
-  logNotice("x0d", "Initiating quick shutdown.");
+void XzeroEventHandler::onQuickShutdown(const xzero::UnixSignalInfo& info) {
+  logNotice("x0d",
+            "Initiating quick shutdown. (requested via $0 by UID $1 PID $2)",
+            UnixSignals::toString(info.signal),
+            info.uid.getOrElse(-1),
+            info.pid.getOrElse(-1));
+
   daemon_->terminate();
 }
 
-void XzeroEventHandler::onGracefulShutdown() {
-  logNotice("x0d", "Initiating graceful shutdown.");
+void XzeroEventHandler::onGracefulShutdown(const xzero::UnixSignalInfo& info) {
+  logNotice("x0d",
+            "Initiating graceful shutdown. (requested via $0 by UID $1 PID $2)",
+            UnixSignals::toString(info.signal),
+            info.uid.getOrElse(-1),
+            info.pid.getOrElse(-1));
 
   /* 1. stop all listeners
    * 2. wait until all requests have been handled.
